@@ -7,78 +7,76 @@ using ExitGames.Client.Photon;
 
 public class GameManager : MonoBehaviourPunCallbacks
 {
-    // -------------------- SINGLETON (prevents duplicate managers) --------------------
     public static GameManager instance;
 
     private void Awake()
     {
-        if (instance != null && instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
+        if (instance != null && instance != this) { Destroy(gameObject); return; }
         instance = this;
     }
+
+    // ✅ CONNECT 5
+    private const int WIN_COUNT = 5;
 
     [Header("Prefabs (Resources folder names)")]
     public string RedPiecePrefabName = "RedPiecePrefab";
     public string BlackPiecePrefabName = "BlackPiecePrefab";
-    
-    [Header("Position References")]
-    [SerializeField] private RectTransform[] rowRects; // 6 RectTransforms for rows
-    [SerializeField] private RectTransform[] columnRects; // 7 RectTransforms for columns
-    
+
+    [Header("Position References (UI Grid)")]
+    [SerializeField] private RectTransform[] rowRects;     // 6 rows
+    [SerializeField] private RectTransform[] columnRects;  // 7 cols
+
     [Header("Canvas Reference")]
-    [SerializeField] private RectTransform piecesParent; // The canvas area for pieces
-    
+    [SerializeField] private RectTransform piecesParent;
     public RectTransform PiecesParent => piecesParent;
 
     [Header("UI")]
-    public GameObject WinnerText;
     [SerializeField] private TextMeshProUGUI statusText;
+    [SerializeField] private TextMeshProUGUI winnerText;
 
-    [Header("Win Line")]
-    private const float lineSize = 0.3f;
-    public Material LineMaterial;
+    [Header("Win Line (UI Image)")]
+    [SerializeField] private RectTransform winLineImage;
+    [SerializeField] private float winLineThickness = 14f;
+    [SerializeField] private Color winLineColor = new Color(1f, 1f, 1f, 0.9f);
+    private Image winLineImgComponent;
 
-    [Header("Board World Positions")]
-    private float[] yCoordinates = new float[] { -3.319f, -1.9f, -0.486f, 0.933f, 2.348f, 3.767f };
-    private float[] xCoordinates = new float[] { -4.25f, -2.7914f, -1.3306f, 0.128f, 1.5826f, 3.0434f, 4.502f };
-    private float pieceStartingY = 8.0f;
+    [Header("Column Highlight")]
+    [SerializeField] private Image[] columnHighlights; // optional in inspector (size 7)
+    [SerializeField] private Color columnHighlightColor = new Color(1f, 1f, 1f, 0.18f);
 
-    private Undo undoStack;
-    private bool IsGameOver;
-
-    // Master authoritative turn
+    private RectTransform boardSpaceRoot; // parent space of row/col anchors
+    private bool isGameOver;
     private PlayerAlliance currentTurn = PlayerAlliance.RED;
-
-    // Local click lock
-    private bool localClickLock = false;
+    private bool localClickLock;
 
     public Board GameBoard { get; private set; }
 
-    // -------------------- ROOM PROPERTIES --------------------
-    private const string PROP_TURN = "TURN";    // 0=RED, 1=BLACK
-    private const string PROP_BOARD = "BOARD";  // 42 chars: 0 empty, 1 red, 2 black
-    private const string PROP_READY = "READY";  // 0 waiting, 1 ready
+    private const string PROP_TURN = "TURN";
+    private const string PROP_BOARD = "BOARD";
+    private const string PROP_READY = "READY";
 
     private void Start()
     {
+        ResolveUIRefs();
+
         GameBoard = new Board();
-        undoStack = new Undo();
-        IsGameOver = false;
+        isGameOver = false;
         localClickLock = false;
 
-        if (WinnerText != null)
-            WinnerText.GetComponent<TextMeshProUGUI>().text = "";
+        boardSpaceRoot = (rowRects != null && rowRects.Length > 0) ? rowRects[0].parent as RectTransform : null;
 
-        // RPC requires PhotonView with valid ViewID
-        if (photonView == null || photonView.ViewID == 0)
+        EnsureWinLineImageExists();
+        HideWinLine();
+
+        EnsureColumnHighlightsExist();
+        HideAllColumnHighlights();
+
+        if (winnerText != null)
         {
-            Debug.LogError("[GM] PhotonView missing or ViewID=0. Add PhotonView + assign Scene View ID!");
+            winnerText.gameObject.SetActive(true);
+            winnerText.text = "";
         }
 
-        // If already in room, sync state
         if (PhotonNetwork.InRoom)
         {
             if (PhotonNetwork.IsMasterClient)
@@ -91,36 +89,28 @@ public class GameManager : MonoBehaviourPunCallbacks
             LoadBoardFromProperty();
         }
 
-        UpdateUIElements();
         UpdateStatus();
         UpdateUndoButtonState(false);
+    }
 
-        Debug.Log("[GM] Started. Master=" + PhotonNetwork.IsMasterClient);
+    private void ResolveUIRefs()
+    {
+        if (winnerText == null)
+        {
+            var go = GameObject.Find("WinnerText");
+            if (go != null)
+            {
+                winnerText = go.GetComponent<TextMeshProUGUI>();
+                if (winnerText == null) winnerText = go.GetComponentInChildren<TextMeshProUGUI>(true);
+            }
+        }
     }
 
     // ================================================================
     // INPUT
     // ================================================================
-    public bool CanLocalPlayerInput()
-    {
-        if (IsGameOver) return false;
-        if (!PhotonNetwork.IsConnected || !PhotonNetwork.InRoom) return false;
-        if (PhotonNetwork.CurrentRoom == null) return false;
-
-        if (!IsRoomReady()) return false;
-
-        // Master plays RED, non-master plays BLACK
-        if (PhotonNetwork.IsMasterClient && currentTurn == PlayerAlliance.RED) return true;
-        if (!PhotonNetwork.IsMasterClient && currentTurn == PlayerAlliance.BLACK) return true;
-
-        return false;
-    }
-
-    // Called by BoardInput
     public void MakeMove(int column)
     {
-        Debug.Log($"[GM] CLICK col={column} ready={IsRoomReady()} master={PhotonNetwork.IsMasterClient} turn={currentTurn}");
-
         if (localClickLock) return;
 
         if (!PhotonNetwork.IsConnected || !PhotonNetwork.InRoom || PhotonNetwork.CurrentRoom == null)
@@ -135,7 +125,6 @@ public class GameManager : MonoBehaviourPunCallbacks
             return;
         }
 
-        // Refresh turn before gating
         ReadTurnFromRoom();
 
         if (!CanLocalPlayerInput())
@@ -148,14 +137,25 @@ public class GameManager : MonoBehaviourPunCallbacks
 
         if (photonView == null || photonView.ViewID == 0)
         {
-            Debug.LogError("[GM] PhotonView missing or ViewID=0.");
+            Debug.LogError("[GM] PhotonView missing or ViewID=0. Add PhotonView + assign Scene View ID!");
             return;
         }
 
         localClickLock = true;
-
-        // Request to master only
         photonView.RPC(nameof(RPC_RequestMove), RpcTarget.MasterClient, column, PhotonNetwork.LocalPlayer.ActorNumber);
+    }
+
+    private bool CanLocalPlayerInput()
+    {
+        if (isGameOver) return false;
+        if (!PhotonNetwork.IsConnected || !PhotonNetwork.InRoom) return false;
+        if (PhotonNetwork.CurrentRoom == null) return false;
+        if (!IsRoomReady()) return false;
+
+        if (PhotonNetwork.IsMasterClient && currentTurn == PlayerAlliance.RED) return true;
+        if (!PhotonNetwork.IsMasterClient && currentTurn == PlayerAlliance.BLACK) return true;
+
+        return false;
     }
 
     // ================================================================
@@ -165,35 +165,21 @@ public class GameManager : MonoBehaviourPunCallbacks
     private void RPC_RequestMove(int column, int senderActor, PhotonMessageInfo info)
     {
         if (!PhotonNetwork.IsMasterClient) return;
-        Debug.Log("[GM] RequestMove for Column : " + column);
-        // Ensure ready is correct on master
+
         MasterUpdateReadyAndInitTurn();
-        if (!IsRoomReady())
+
+        if (!IsRoomReady() || isGameOver || column < 0 || column >= BoardUtils.NUM_COLS)
         {
             photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
             return;
         }
 
-        if (IsGameOver)
-        {
-            photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
-            return;
-        }
-
-        if (column < 0 || column >= BoardUtils.NUM_COLS)
-        {
-            photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
-            return;
-        }
-
-        // Enforce turn: master is RED, other is BLACK
         if (!CanActorPlayNow(senderActor))
         {
             photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
             return;
         }
 
-        // Compute drop row BEFORE placing
         int dropRow = FindDropRow(column);
         if (dropRow < 0)
         {
@@ -203,64 +189,39 @@ public class GameManager : MonoBehaviourPunCallbacks
 
         try
         {
-            // Apply on master only
             GameBoard.SetPiece(column, currentTurn);
 
-            // Spawn network piece (master only)
-            SpawnPiece_MasterOnly(column, dropRow, currentTurn);
+            // Turn ON highlight for everyone while it drops
+            photonView.RPC(nameof(RPC_SetColumnHighlight), RpcTarget.All, column, true);
 
-            // Snapshot board for late join safety
+            SpawnPiece_MasterOnly(column, dropRow, currentTurn);
             SetBoardProperty();
 
-            // Win check (master only)
-            if (Connect4Utils.Finished(GameBoard)) 
+            // ✅ CONNECT-5 WIN CHECK
+            Tile placedTile = (currentTurn == PlayerAlliance.RED) ? Tile.RED : Tile.BLACK;
+            if (TryGetWinLineFromLastMove(dropRow, column, placedTile, out Vector2 aAnch, out Vector2 bAnch))
             {
-                IsGameOver = true;
-                photonView.RPC(nameof(RPC_GameOver), RpcTarget.AllBuffered, (byte)currentTurn);
+                isGameOver = true;
+
+                photonView.RPC(nameof(RPC_GameOverWithUILine), RpcTarget.AllBuffered,
+                    (byte)currentTurn,
+                    aAnch.x, aAnch.y,
+                    bAnch.x, bAnch.y);
+
                 photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
                 return;
             }
 
-            // Switch turn (master only) + broadcast
             currentTurn = (currentTurn == PlayerAlliance.RED) ? PlayerAlliance.BLACK : PlayerAlliance.RED;
             SetTurnProperty(currentTurn);
             photonView.RPC(nameof(RPC_SyncTurn), RpcTarget.AllBuffered, (byte)currentTurn);
 
             photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
         }
-        catch (ColumnOccupiedException)
+        catch
         {
             photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
         }
-        catch (InvalidColumnException)
-        {
-            photonView.RPC(nameof(RPC_UnlockInput), RpcTarget.All, senderActor);
-        }
-    }
-
-    [PunRPC]
-    private void RPC_SyncTurn(byte turnB)
-    {
-        currentTurn = (turnB == 0) ? PlayerAlliance.RED : PlayerAlliance.BLACK;
-        UpdateUIElements();
-        UpdateStatus();
-        localClickLock = false;
-    }
-
-    [PunRPC]
-    private void RPC_GameOver(byte winnerB)
-    {
-        var winner = (winnerB == 0) ? PlayerAlliance.RED : PlayerAlliance.BLACK;
-        IsGameOver = true;
-        HandleEndGame(winner);
-        localClickLock = false;
-    }
-
-    [PunRPC]
-    private void RPC_UnlockInput(int senderActor)
-    {
-        if (PhotonNetwork.LocalPlayer != null && PhotonNetwork.LocalPlayer.ActorNumber == senderActor)
-            localClickLock = false;
     }
 
     private bool CanActorPlayNow(int actor)
@@ -272,7 +233,6 @@ public class GameManager : MonoBehaviourPunCallbacks
         return false;
     }
 
-    // Board drops from bottom (NUM_ROWS-1) upward
     private int FindDropRow(int column)
     {
         for (int r = BoardUtils.NUM_ROWS - 1; r >= 0; r--)
@@ -284,25 +244,93 @@ public class GameManager : MonoBehaviourPunCallbacks
     }
 
     // ================================================================
-    // PIECE SPAWN (MASTER ONLY) + InstantiationData for xDest/yDest
+    // RPCs
+    // ================================================================
+    [PunRPC]
+    private void RPC_SyncTurn(byte turnB)
+    {
+        currentTurn = (turnB == 0) ? PlayerAlliance.RED : PlayerAlliance.BLACK;
+        UpdateStatus();
+        localClickLock = false;
+    }
+
+    [PunRPC]
+    private void RPC_GameOverWithUILine(byte winnerB, float ax, float ay, float bx, float by)
+    {
+        ResolveUIRefs();
+        EnsureWinLineImageExists();
+
+        var winnerAlliance = (winnerB == 0) ? PlayerAlliance.RED : PlayerAlliance.BLACK;
+        isGameOver = true;
+
+        HideAllColumnHighlights();
+
+        if (winnerText != null)
+        {
+            winnerText.gameObject.SetActive(true);
+            winnerText.text = (winnerAlliance == PlayerAlliance.RED) ? "RED WON" : "YELLOW WON";
+            winnerText.ForceMeshUpdate(true, true);
+            winnerText.transform.SetAsLastSibling();
+        }
+
+        SetStatus("Game Over");
+
+        Vector2 a = new Vector2(ax, ay);
+        Vector2 b = new Vector2(bx, by);
+        ShowWinLineBetweenAnchors(a, b);
+
+        localClickLock = false;
+    }
+
+    [PunRPC]
+    private void RPC_UnlockInput(int senderActor)
+    {
+        if (PhotonNetwork.LocalPlayer != null &&
+            PhotonNetwork.LocalPlayer.ActorNumber == senderActor)
+        {
+            localClickLock = false;
+        }
+    }
+
+    [PunRPC]
+    private void RPC_SetColumnHighlight(int column, bool on)
+    {
+        if (columnHighlights == null || columnHighlights.Length != BoardUtils.NUM_COLS) return;
+
+        if (!on)
+        {
+            if (column >= 0 && column < columnHighlights.Length && columnHighlights[column] != null)
+                columnHighlights[column].gameObject.SetActive(false);
+            return;
+        }
+
+        for (int i = 0; i < columnHighlights.Length; i++)
+            if (columnHighlights[i] != null) columnHighlights[i].gameObject.SetActive(false);
+
+        if (column >= 0 && column < columnHighlights.Length && columnHighlights[column] != null)
+            columnHighlights[column].gameObject.SetActive(true);
+    }
+
+    public void ClearColumnHighlightLocal(int column)
+    {
+        if (isGameOver) return;
+        if (columnHighlights == null || columnHighlights.Length != BoardUtils.NUM_COLS) return;
+        if (column < 0 || column >= columnHighlights.Length) return;
+        if (columnHighlights[column] == null) return;
+
+        columnHighlights[column].gameObject.SetActive(false);
+    }
+
+    // ================================================================
+    // PIECE SPAWN (MASTER ONLY)
     // ================================================================
     private void SpawnPiece_MasterOnly(int column, int row, PlayerAlliance alliance)
     {
         if (!PhotonNetwork.IsMasterClient) return;
 
-        // Get the RectTransforms for column and row
-        RectTransform columnRect = columnRects[column];
-        RectTransform rowRect = rowRects[BoardUtils.NUM_ROWS - row - 1];
-        
-        // Calculate position using anchored positions
-        Vector2 anchoredPosition = new Vector2(
-            columnRect.anchoredPosition.x,
-            rowRect.anchoredPosition.y
-        );
-
+        Vector2 anchoredPosition = GetAnchoredPosForCell(row, column);
         string prefabName = (alliance == PlayerAlliance.BLACK) ? BlackPiecePrefabName : RedPiecePrefabName;
 
-        // Get the parent's PhotonView ID
         PhotonView parentPhotonView = piecesParent.GetComponent<PhotonView>();
         int parentViewID = parentPhotonView != null ? parentPhotonView.ViewID : 0;
 
@@ -311,17 +339,169 @@ public class GameManager : MonoBehaviourPunCallbacks
             Vector3.zero,
             Quaternion.identity,
             0,
-            new object[] { 
-                anchoredPosition.x, 
-                anchoredPosition.y,
-                parentViewID // Pass parent's view ID
-            }
+            new object[] { anchoredPosition.x, anchoredPosition.y, parentViewID, column }
         );
     }
 
+    private Vector2 GetAnchoredPosForCell(int boardRow, int boardCol)
+    {
+        int uiRowIndex = BoardUtils.NUM_ROWS - boardRow - 1;
+        RectTransform col = columnRects[boardCol];
+        RectTransform row = rowRects[uiRowIndex];
+        return new Vector2(col.anchoredPosition.x, row.anchoredPosition.y);
+    }
 
     // ================================================================
-    // ROOM PROPERTIES
+    // WIN CHECK (CONNECT 5)
+    // ================================================================
+    private bool TryGetWinLineFromLastMove(int r, int c, Tile t, out Vector2 aAnch, out Vector2 bAnch)
+    {
+        aAnch = Vector2.zero;
+        bAnch = Vector2.zero;
+
+        int[,] dirs = new int[,] { { 0, 1 }, { 1, 0 }, { 1, 1 }, { 1, -1 } };
+
+        for (int i = 0; i < 4; i++)
+        {
+            int dr = dirs[i, 0];
+            int dc = dirs[i, 1];
+
+            int minR = r, minC = c;
+            int maxR = r, maxC = c;
+
+            int rr = r - dr, cc = c - dc;
+            while (IsInside(rr, cc) && GameBoard.Table[rr, cc] == t)
+            {
+                minR = rr; minC = cc;
+                rr -= dr; cc -= dc;
+            }
+
+            rr = r + dr; cc = c + dc;
+            while (IsInside(rr, cc) && GameBoard.Table[rr, cc] == t)
+            {
+                maxR = rr; maxC = cc;
+                rr += dr; cc += dc;
+            }
+
+            int len = Mathf.Max(Mathf.Abs(maxR - minR), Mathf.Abs(maxC - minC)) + 1;
+
+            if (len >= WIN_COUNT)
+            {
+                aAnch = GetAnchoredPosForCell(minR, minC);
+                bAnch = GetAnchoredPosForCell(maxR, maxC);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsInside(int r, int c)
+    {
+        return r >= 0 && r < BoardUtils.NUM_ROWS && c >= 0 && c < BoardUtils.NUM_COLS;
+    }
+
+    // ================================================================
+    // WIN LINE UI IMAGE
+    // ================================================================
+    private void EnsureWinLineImageExists()
+    {
+        if (winLineImage != null && winLineImgComponent != null) return;
+
+        if (winLineImage == null)
+        {
+            GameObject go = new GameObject("WinLineImage", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            go.transform.SetParent(piecesParent, false);
+
+            winLineImage = go.GetComponent<RectTransform>();
+            winLineImgComponent = go.GetComponent<Image>();
+            winLineImgComponent.sprite = Sprite.Create(Texture2D.whiteTexture, new Rect(0, 0, 1, 1), new Vector2(0.5f, 0.5f));
+        }
+        else
+        {
+            winLineImgComponent = winLineImage.GetComponent<Image>();
+            if (winLineImgComponent == null) winLineImgComponent = winLineImage.gameObject.AddComponent<Image>();
+        }
+
+        winLineImgComponent.color = winLineColor;
+        winLineImgComponent.raycastTarget = false;
+
+        winLineImage.anchorMin = new Vector2(0.5f, 0.5f);
+        winLineImage.anchorMax = new Vector2(0.5f, 0.5f);
+        winLineImage.pivot = new Vector2(0.5f, 0.5f);
+        winLineImage.SetAsLastSibling();
+    }
+
+    private void HideWinLine()
+    {
+        if (winLineImage != null)
+            winLineImage.gameObject.SetActive(false);
+    }
+
+    private void ShowWinLineBetweenAnchors(Vector2 a, Vector2 b)
+    {
+        if (winLineImage == null) return;
+
+        winLineImage.gameObject.SetActive(true);
+        winLineImage.SetAsLastSibling();
+
+        Vector2 mid = (a + b) * 0.5f;
+        float length = Vector2.Distance(a, b);
+        float angle = Mathf.Atan2(b.y - a.y, b.x - a.x) * Mathf.Rad2Deg;
+
+        winLineImage.anchoredPosition = mid;
+        winLineImage.sizeDelta = new Vector2(length, winLineThickness);
+        winLineImage.localRotation = Quaternion.Euler(0f, 0f, angle);
+    }
+
+    // ================================================================
+    // COLUMN HIGHLIGHT SETUP
+    // ================================================================
+    private void EnsureColumnHighlightsExist()
+    {
+        if (boardSpaceRoot == null) return;
+
+        if (columnHighlights != null && columnHighlights.Length == BoardUtils.NUM_COLS)
+            return;
+
+        columnHighlights = new Image[BoardUtils.NUM_COLS];
+
+        for (int c = 0; c < BoardUtils.NUM_COLS; c++)
+        {
+            GameObject go = new GameObject($"ColHighlight_{c}", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            go.transform.SetParent(boardSpaceRoot, false);
+
+            RectTransform rt = go.GetComponent<RectTransform>();
+            Image img = go.GetComponent<Image>();
+
+            img.color = columnHighlightColor;
+            img.raycastTarget = false;
+
+            rt.anchorMin = new Vector2(0.5f, 0f);
+            rt.anchorMax = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+
+            float width = (columnRects != null && columnRects.Length > c) ? Mathf.Max(60f, columnRects[c].rect.width) : 80f;
+            rt.sizeDelta = new Vector2(width, 0f);
+
+            float x = (columnRects != null && columnRects.Length > c) ? columnRects[c].anchoredPosition.x : 0f;
+            rt.anchoredPosition = new Vector2(x, 0f);
+
+            go.SetActive(false);
+            columnHighlights[c] = img;
+        }
+    }
+
+    private void HideAllColumnHighlights()
+    {
+        if (columnHighlights == null) return;
+        for (int i = 0; i < columnHighlights.Length; i++)
+            if (columnHighlights[i] != null)
+                columnHighlights[i].gameObject.SetActive(false);
+    }
+
+    // ================================================================
+    // ROOM PROPERTIES / STATUS (unchanged)
     // ================================================================
     private void EnsureRoomPropertiesExist()
     {
@@ -345,15 +525,8 @@ public class GameManager : MonoBehaviourPunCallbacks
         bool ready = PhotonNetwork.CurrentRoom.PlayerCount >= 2;
         SetReadyProperty(ready);
 
-        // When match becomes ready, ensure turn starts at RED (master)
-        if (ready)
-        {
-            // If TURN is missing (or corrupted), reset to RED
-            if (!PhotonNetwork.CurrentRoom.CustomProperties.ContainsKey(PROP_TURN))
-                SetTurnProperty(PlayerAlliance.RED);
-        }
-
-        Debug.Log("[GM] READY=" + (ready ? 1 : 0) + " players=" + PhotonNetwork.CurrentRoom.PlayerCount);
+        if (ready && !PhotonNetwork.CurrentRoom.CustomProperties.ContainsKey(PROP_TURN))
+            SetTurnProperty(PlayerAlliance.RED);
     }
 
     private bool IsRoomReady()
@@ -412,9 +585,9 @@ public class GameManager : MonoBehaviourPunCallbacks
         {
             for (int c = 0; c < BoardUtils.NUM_COLS; c++)
             {
-                Tile t = GameBoard.Table[r, c];
-                if (t == Tile.EMPTY) sb.Append('0');
-                else if (t == Tile.RED) sb.Append('1');
+                Tile tile = GameBoard.Table[r, c];
+                if (tile == Tile.EMPTY) sb.Append('0');
+                else if (tile == Tile.RED) sb.Append('1');
                 else sb.Append('2');
             }
         }
@@ -457,22 +630,7 @@ public class GameManager : MonoBehaviourPunCallbacks
         if (propertiesThatChanged.ContainsKey(PROP_READY) || propertiesThatChanged.ContainsKey(PROP_TURN))
         {
             ReadTurnFromRoom();
-            UpdateUIElements();
             UpdateStatus();
-        }
-    }
-
-    // ================================================================
-    // UI
-    // ================================================================
-    private void UpdateUIElements()
-    {
-        var textMesh = GameObject.FindGameObjectWithTag("PlayerTextMesh");
-        if (textMesh != null)
-        {
-            var playerText = textMesh.GetComponent<TextMeshProUGUI>();
-            if (playerText != null)
-                playerText.text = (currentTurn == PlayerAlliance.RED) ? "RED TURN" : "BLACK TURN";
         }
     }
 
@@ -496,6 +654,12 @@ public class GameManager : MonoBehaviourPunCallbacks
             return;
         }
 
+        if (isGameOver)
+        {
+            SetStatus("Game Over");
+            return;
+        }
+
         ReadTurnFromRoom();
 
         if (!CanLocalPlayerInput())
@@ -507,42 +671,18 @@ public class GameManager : MonoBehaviourPunCallbacks
         SetStatus("Your turn");
     }
 
-    // ================================================================
-    // END GAME
-    // ================================================================
-    private void HandleEndGame(PlayerAlliance winner)
-    {
-        UpdateUndoButtonState(false);
-
-        if (WinnerText != null)
-            WinnerText.GetComponent<TextMeshProUGUI>().text = (winner == PlayerAlliance.RED) ? "RED WON" : "BLACK WON";
-
-        SetStatus("Game Over");
-        
-        Debug.Log("Game Over");
-    }
-
-    // ================================================================
-    // UNDO DISABLED ONLINE
-    // ================================================================
     private void UpdateUndoButtonState(bool enabled)
     {
         GameObject btn = GameObject.Find("UndoButton");
         if (btn != null)
         {
             Button undoButton = btn.GetComponent<Button>();
-            if (undoButton != null)
-                undoButton.interactable = enabled;
+            if (undoButton != null) undoButton.interactable = enabled;
         }
     }
 
-    // ================================================================
-    // ROOM EVENTS
-    // ================================================================
     public override void OnJoinedRoom()
     {
-        Debug.Log("[GM] OnJoinedRoom players=" + PhotonNetwork.CurrentRoom.PlayerCount);
-
         if (PhotonNetwork.IsMasterClient)
         {
             EnsureRoomPropertiesExist();
@@ -551,15 +691,11 @@ public class GameManager : MonoBehaviourPunCallbacks
 
         ReadTurnFromRoom();
         LoadBoardFromProperty();
-
-        UpdateUIElements();
         UpdateStatus();
     }
 
     public override void OnPlayerEnteredRoom(Photon.Realtime.Player newPlayer)
     {
-        Debug.Log("[GM] Player entered room. players=" + PhotonNetwork.CurrentRoom.PlayerCount);
-
         if (PhotonNetwork.IsMasterClient)
             MasterUpdateReadyAndInitTurn();
 
@@ -568,8 +704,6 @@ public class GameManager : MonoBehaviourPunCallbacks
 
     public override void OnPlayerLeftRoom(Photon.Realtime.Player otherPlayer)
     {
-        Debug.Log("[GM] Player left room.");
-
         if (PhotonNetwork.IsMasterClient)
             MasterUpdateReadyAndInitTurn();
 
@@ -579,9 +713,6 @@ public class GameManager : MonoBehaviourPunCallbacks
 
     public override void OnMasterClientSwitched(Photon.Realtime.Player newMasterClient)
     {
-        Debug.Log("[GM] Master switched -> " + newMasterClient);
-
-        // New master should immediately recompute READY
         if (PhotonNetwork.IsMasterClient)
         {
             EnsureRoomPropertiesExist();

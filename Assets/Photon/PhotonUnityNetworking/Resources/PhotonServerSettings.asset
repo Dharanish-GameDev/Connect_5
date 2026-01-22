@@ -49,6 +49,9 @@ MonoBehaviour:
   - RPC_SyncTurn
   - RPC_RenderMoveUI
   - RPC_OnDropComplete
+  - RPC_GameOverWithLine
+  - RPC_GameOverWithUILine
+  - RPC_SetColumnHighlight
   DisableAutoOpenWizard: 1
   ShowSettings: 0
   DevRegionSetOnce: 1

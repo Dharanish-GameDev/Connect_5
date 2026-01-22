@@ -7,16 +7,19 @@ public class Connect4Piece : MonoBehaviourPun
     public float speed = 12f;
 
     private RectTransform rectTransform;
-    private float xDest;
-    private float yDest;
-    private bool hasTarget;
+
     private Vector2 targetPosition;
     private Vector2 startPosition;
+
+    private bool hasTarget;
+
+    // ✅ NEW: column index (passed by GameManager)
+    private int columnIndex = -1;
 
     private void Awake()
     {
         rectTransform = GetComponent<RectTransform>();
-        
+
         // Parent to pieces container
         GameManager gm = GameManager.instance;
         if (gm != null && gm.PiecesParent != null)
@@ -25,54 +28,57 @@ public class Connect4Piece : MonoBehaviourPun
             rectTransform.localScale = Vector3.one;
             rectTransform.localRotation = Quaternion.identity;
         }
-        
-        // Get instantiation data
+
+        // Read instantiation data
         object[] data = photonView.InstantiationData;
-        if (data != null && data.Length >= 2)
+
+        // Expected:
+        // [0] = x
+        // [1] = y
+        // [2] = parentViewID
+        // [3] = column index   ✅
+        if (data != null && data.Length >= 4)
         {
-            xDest = (float)data[0];
-            yDest = (float)data[1];
+            float xDest = (float)data[0];
+            float yDest = (float)data[1];
+            columnIndex = (int)data[3];
+
             targetPosition = new Vector2(xDest, yDest);
-            
-            // Set start position (above the board)
+
+            // Start above board
             startPosition = new Vector2(xDest, GetDropStartHeight());
-            Debug.Log("Drop Height: " + GetDropStartHeight());
             rectTransform.anchoredPosition = startPosition;
-            
+
             hasTarget = true;
             transform.SetAsLastSibling();
         }
         else
         {
             hasTarget = false;
-            Debug.LogWarning("[Connect4Piece] Missing InstantiationData.");
+            Debug.LogWarning("[Connect4Piece] Missing or invalid InstantiationData.");
         }
     }
 
     private float GetDropStartHeight()
     {
-        // Adjust based on your canvas and board layout
         Canvas canvas = GetComponentInParent<Canvas>();
         if (canvas != null)
         {
-            // Start from top of canvas
-            return canvas.pixelRect.height / 2 + 100f;
+            return canvas.pixelRect.height / 2f + 120f;
         }
-        return 10f; // Default fallback
+        return 600f; // fallback
     }
 
     private void Update()
     {
         if (!hasTarget) return;
 
-        Vector2 currentPos = rectTransform.anchoredPosition;
         rectTransform.anchoredPosition = Vector2.MoveTowards(
-            currentPos, 
-            targetPosition, 
+            rectTransform.anchoredPosition,
+            targetPosition,
             speed * Time.deltaTime
         );
 
-        // Check if reached destination
         if (Vector2.Distance(rectTransform.anchoredPosition, targetPosition) < 0.1f)
         {
             rectTransform.anchoredPosition = targetPosition;
@@ -83,15 +89,19 @@ public class Connect4Piece : MonoBehaviourPun
 
     private void OnDropComplete()
     {
-        // Optional: Trigger any completion events
-        // You could broadcast an RPC here if needed
-        photonView.RPC("RPC_OnDropComplete", RpcTarget.All);
+        // ✅ Clear column highlight locally (no RPC needed)
+        if (columnIndex >= 0 && GameManager.instance != null)
+        {
+            GameManager.instance.ClearColumnHighlightLocal(columnIndex);
+        }
+
+        // Optional sync hook (sound / FX)
+        photonView.RPC(nameof(RPC_OnDropComplete), RpcTarget.All);
     }
 
     [PunRPC]
     private void RPC_OnDropComplete()
     {
-        // All clients execute this when piece lands
-        // Could play sound, trigger effects, etc.
+        // Optional shared effects (sound, particles, etc.)
     }
 }
