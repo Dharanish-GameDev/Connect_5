@@ -1,13 +1,14 @@
-﻿using UnityEngine;
-using UnityEngine.UI;
-using TMPro;
+﻿using System.Collections.Generic;
 using Photon.Pun;
 using Photon.Realtime;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
 using ExitGames.Client.Photon;
 
-public class GameManager : MonoBehaviourPunCallbacks
+public class GameManagerConnect5 : MonoBehaviourPunCallbacks
 {
-    public static GameManager instance;
+    public static GameManagerConnect5 instance;
 
     private void Awake()
     {
@@ -23,8 +24,8 @@ public class GameManager : MonoBehaviourPunCallbacks
     public string BlackPiecePrefabName = "BlackPiecePrefab";
 
     [Header("Position References (UI Grid)")]
-    [SerializeField] private RectTransform[] rowRects;     // 6 rows
-    [SerializeField] private RectTransform[] columnRects;  // 7 cols
+    [SerializeField] private RectTransform[] rowRects;     // 6 rows (or your C5 rows)
+    [SerializeField] private RectTransform[] columnRects;  // 7 cols (or your C5 cols)
 
     [Header("Canvas Reference")]
     [SerializeField] private RectTransform piecesParent;
@@ -41,10 +42,10 @@ public class GameManager : MonoBehaviourPunCallbacks
     private Image winLineImgComponent;
 
     [Header("Column Highlight")]
-    [SerializeField] private Image[] columnHighlights; // optional in inspector (size 7)
+    [SerializeField] private Image[] columnHighlights; // optional in inspector
     [SerializeField] private Color columnHighlightColor = new Color(1f, 1f, 1f, 0.18f);
 
-    private RectTransform boardSpaceRoot; // parent space of row/col anchors
+    private RectTransform boardSpaceRoot;
     private bool isGameOver;
     private PlayerAlliance currentTurn = PlayerAlliance.RED;
     private bool localClickLock;
@@ -54,6 +55,16 @@ public class GameManager : MonoBehaviourPunCallbacks
     private const string PROP_TURN = "TURN";
     private const string PROP_BOARD = "BOARD";
     private const string PROP_READY = "READY";
+
+    // ✅ piece registry so we can glow specific discs (row,col)
+    private readonly Dictionary<int, Connect5Piece> pieceMap = new Dictionary<int, Connect5Piece>();
+    private int CellKey(int r, int c) => (r * 1000) + c;
+
+    public void RegisterPiece(int r, int c, Connect5Piece piece)
+    {
+        if (piece == null) return;
+        pieceMap[CellKey(r, c)] = piece;
+    }
 
     private void Start()
     {
@@ -191,17 +202,27 @@ public class GameManager : MonoBehaviourPunCallbacks
         {
             GameBoard.SetPiece(column, currentTurn);
 
-            // Turn ON highlight for everyone while it drops
             photonView.RPC(nameof(RPC_SetColumnHighlight), RpcTarget.All, column, true);
 
             SpawnPiece_MasterOnly(column, dropRow, currentTurn);
             SetBoardProperty();
 
-            // ✅ CONNECT-5 WIN CHECK
             Tile placedTile = (currentTurn == PlayerAlliance.RED) ? Tile.RED : Tile.BLACK;
-            if (TryGetWinLineFromLastMove(dropRow, column, placedTile, out Vector2 aAnch, out Vector2 bAnch))
+
+            // ✅ WIN CHECK + winning cells for glow
+            if (TryGetWinningCellsFromLastMove(dropRow, column, placedTile, out List<Vector2Int> winCells, out Vector2 aAnch, out Vector2 bAnch))
             {
                 isGameOver = true;
+
+                int[] rows = new int[winCells.Count];
+                int[] cols = new int[winCells.Count];
+                for (int i = 0; i < winCells.Count; i++)
+                {
+                    rows[i] = winCells[i].x;
+                    cols[i] = winCells[i].y;
+                }
+
+                photonView.RPC(nameof(RPC_GlowWinningPieces), RpcTarget.AllBuffered, rows, cols);
 
                 photonView.RPC(nameof(RPC_GameOverWithUILine), RpcTarget.AllBuffered,
                     (byte)currentTurn,
@@ -311,6 +332,22 @@ public class GameManager : MonoBehaviourPunCallbacks
             columnHighlights[column].gameObject.SetActive(true);
     }
 
+    // ✅ Glow RPC
+    [PunRPC]
+    private void RPC_GlowWinningPieces(int[] rows, int[] cols)
+    {
+        if (rows == null || cols == null || rows.Length != cols.Length) return;
+
+        for (int i = 0; i < rows.Length; i++)
+        {
+            int key = CellKey(rows[i], cols[i]);
+            if (pieceMap.TryGetValue(key, out Connect5Piece piece) && piece != null)
+            {
+                piece.SetGlow(true);
+            }
+        }
+    }
+
     public void ClearColumnHighlightLocal(int column)
     {
         if (isGameOver) return;
@@ -339,7 +376,7 @@ public class GameManager : MonoBehaviourPunCallbacks
             Vector3.zero,
             Quaternion.identity,
             0,
-            new object[] { anchoredPosition.x, anchoredPosition.y, parentViewID, column }
+            new object[] { anchoredPosition.x, anchoredPosition.y, parentViewID, column, row }
         );
     }
 
@@ -352,10 +389,11 @@ public class GameManager : MonoBehaviourPunCallbacks
     }
 
     // ================================================================
-    // WIN CHECK (CONNECT 5)
+    // WIN CHECK + GET EXACT 5 CELLS (for glow)
     // ================================================================
-    private bool TryGetWinLineFromLastMove(int r, int c, Tile t, out Vector2 aAnch, out Vector2 bAnch)
+    private bool TryGetWinningCellsFromLastMove(int r, int c, Tile t, out List<Vector2Int> winCells, out Vector2 aAnch, out Vector2 bAnch)
     {
+        winCells = null;
         aAnch = Vector2.zero;
         bAnch = Vector2.zero;
 
@@ -383,14 +421,35 @@ public class GameManager : MonoBehaviourPunCallbacks
                 rr += dr; cc += dc;
             }
 
-            int len = Mathf.Max(Mathf.Abs(maxR - minR), Mathf.Abs(maxC - minC)) + 1;
-
-            if (len >= WIN_COUNT)
+            List<Vector2Int> line = new List<Vector2Int>();
+            int curR = minR, curC = minC;
+            while (true)
             {
-                aAnch = GetAnchoredPosForCell(minR, minC);
-                bAnch = GetAnchoredPosForCell(maxR, maxC);
-                return true;
+                line.Add(new Vector2Int(curR, curC));
+                if (curR == maxR && curC == maxC) break;
+                curR += dr; curC += dc;
             }
+
+            if (line.Count < WIN_COUNT) continue;
+
+            int idxOfLast = line.FindIndex(v => v.x == r && v.y == c);
+            if (idxOfLast < 0) continue;
+
+            int start = Mathf.Clamp(idxOfLast - (WIN_COUNT - 1), 0, line.Count - WIN_COUNT);
+            if (idxOfLast > start + (WIN_COUNT - 1))
+                start = idxOfLast - (WIN_COUNT - 1);
+            start = Mathf.Clamp(start, 0, line.Count - WIN_COUNT);
+
+            winCells = new List<Vector2Int>();
+            for (int k = 0; k < WIN_COUNT; k++)
+                winCells.Add(line[start + k]);
+
+            Vector2Int A = winCells[0];
+            Vector2Int B = winCells[winCells.Count - 1];
+
+            aAnch = GetAnchoredPosForCell(A.x, A.y);
+            bAnch = GetAnchoredPosForCell(B.x, B.y);
+            return true;
         }
 
         return false;

@@ -52,6 +52,7 @@ MonoBehaviour:
   - RPC_GameOverWithLine
   - RPC_GameOverWithUILine
   - RPC_SetColumnHighlight
+  - RPC_GlowWinningPieces
   DisableAutoOpenWizard: 1
   ShowSettings: 0
   DevRegionSetOnce: 1

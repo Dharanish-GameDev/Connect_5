@@ -13,6 +13,7 @@ GameObject:
   - component: {fileID: 7849243252067652958}
   - component: {fileID: 3971961263786395468}
   - component: {fileID: 108859300156948159}
+  - component: {fileID: -7442164178910812141}
   m_Layer: 5
   m_Name: RedPiece
   m_TagString: Untagged
@@ -113,3 +114,25 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   speed: 1000
+  dropStartPadding: 120
+  outline: {fileID: 0}
+  glowColor: {r: 1, g: 0.95, b: 0.2, a: 1}
+  glowMin: 4
+  glowMax: 10
+  pulseSpeed: 2.2
+  alphaPulseAmount: 0.25
+--- !u!114 &-7442164178910812141
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6341572696178906571}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e19747de3f5aca642ab2be37e372fb86, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Outline
+  m_EffectColor: {r: 0, g: 0, b: 0, a: 0.5}
+  m_EffectDistance: {x: 1, y: -1}
+  m_UseGraphicAlpha: 1

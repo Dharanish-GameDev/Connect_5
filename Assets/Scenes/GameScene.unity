@@ -1046,7 +1046,7 @@ MonoBehaviour:
   statusText: {fileID: 1161721297}
   winnerText: {fileID: 854230475512861947}
   winLineImage: {fileID: 1936703660}
-  winLineThickness: 50
+  winLineThickness: 0
   winLineColor: {r: 1, g: 1, b: 1, a: 0.9}
   columnHighlights: []
   columnHighlightColor: {r: 1, g: 1, b: 1, a: 0.18}
